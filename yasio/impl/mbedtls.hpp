@@ -36,8 +36,19 @@ SOFTWARE.
 YASIO__DECL yssl_ctx_st* yssl_ctx_new(const yssl_options& opts)
 {
   auto ctx = new yssl_ctx_st();
+#if MBEDTLS_VERSION_MAJOR >= 4
+  // Mbed TLS 4.x always uses the built-in PSA RNG and no longer exposes
+  // entropy/CTR_DRBG contexts. psa_crypto_init() must succeed before any
+  // cryptographic operation (key/cert parsing, TLS handshake, ...); if it
+  // fails every later crypto call silently fails, so surface it in the log.
+  // It is safe to call it multiple times.
+  psa_status_t psa_status = ::psa_crypto_init();
+  if (psa_status != PSA_SUCCESS)
+    YASIO_LOG("psa_crypto_init fail with status=%d", static_cast<int>(psa_status));
+#else
   ::mbedtls_ctr_drbg_init(&ctx->ctr_drbg);
   ::mbedtls_entropy_init(&ctx->entropy);
+#endif
   ::mbedtls_ssl_config_init(&ctx->conf);
   ::mbedtls_x509_crt_init(&ctx->cert);
   ::mbedtls_pk_init(&ctx->pkey);
@@ -48,8 +59,14 @@ YASIO__DECL yssl_ctx_st* yssl_ctx_new(const yssl_options& opts)
     // ssl role
     if ((ret = ::mbedtls_ssl_config_defaults(&ctx->conf, opts.client ? MBEDTLS_SSL_IS_CLIENT : MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
                                              MBEDTLS_SSL_PRESET_DEFAULT)) != 0)
+    {
+      // A broken config makes every later ssl_setup/handshake fail; abort
+      // instead of continuing with a half-initialized context.
       YASIO_LOG("mbedtls_ssl_config_defaults fail with ret=%d", ret);
+      break;
+    }
 
+#if MBEDTLS_VERSION_MAJOR < 4
     // rgn engine
     std::string_view pers = opts.client ? std::string_view{YASIO_SSL_PIN, YASIO_SSL_PIN_LEN} : std::string_view{YASIO_SSL_PON, YASIO_SSL_PON_LEN};
     ret                     = ::mbedtls_ctr_drbg_seed(&ctx->ctr_drbg, ::mbedtls_entropy_func, &ctx->entropy, (const unsigned char*)pers.data(), pers.length());
@@ -59,6 +76,7 @@ YASIO__DECL yssl_ctx_st* yssl_ctx_new(const yssl_options& opts)
       break;
     }
     ::mbedtls_ssl_conf_rng(&ctx->conf, ::mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
+#endif
 
     // --- load cert
     int authmode = MBEDTLS_SSL_VERIFY_OPTIONAL;
@@ -89,13 +107,17 @@ YASIO__DECL yssl_ctx_st* yssl_ctx_new(const yssl_options& opts)
       // --- load server private key
       if (yasio__valid_str(opts.keyfile_))
       {
-#  if MBEDTLS_VERSION_MAJOR >= 3
-        if (::mbedtls_pk_parse_keyfile(&ctx->pkey, opts.keyfile_, nullptr, mbedtls_ctr_drbg_random, &ctx->ctr_drbg) != 0)
+#  if MBEDTLS_VERSION_MAJOR >= 4
+        // Mbed TLS 4.x dropped the f_rng/p_rng arguments (PSA RNG is used).
+        ret = ::mbedtls_pk_parse_keyfile(&ctx->pkey, opts.keyfile_, nullptr);
+#  elif MBEDTLS_VERSION_MAJOR == 3
+        ret = ::mbedtls_pk_parse_keyfile(&ctx->pkey, opts.keyfile_, nullptr, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
 #  else
-        if (::mbedtls_pk_parse_keyfile(&ctx->pkey, opts.keyfile_, nullptr) != 0)
+        ret = ::mbedtls_pk_parse_keyfile(&ctx->pkey, opts.keyfile_, nullptr);
 #  endif
+        if (ret != 0)
         {
-          YASIO_LOG("mbedtls_x509_crt_parse_file with ret=-0x%x", (unsigned int)-ret);
+          YASIO_LOG("mbedtls_pk_parse_keyfile fail with ret=-0x%x", (unsigned int)-ret);
           break;
         }
       }
@@ -119,8 +141,10 @@ YASIO__DECL void yssl_ctx_free(yssl_ctx_st*& ctx)
   ::mbedtls_pk_free(&ctx->pkey);
   ::mbedtls_x509_crt_free(&ctx->cert);
   ::mbedtls_ssl_config_free(&ctx->conf);
+#if MBEDTLS_VERSION_MAJOR < 4
   ::mbedtls_entropy_free(&ctx->entropy);
   ::mbedtls_ctr_drbg_free(&ctx->ctr_drbg);
+#endif
 
   delete ctx;
   ctx = nullptr;
@@ -128,8 +152,12 @@ YASIO__DECL void yssl_ctx_free(yssl_ctx_st*& ctx)
 
 YASIO__DECL int yssl_mbedtls_send(void* ctx, const unsigned char* buf, size_t len)
 {
+#if MBEDTLS_VERSION_MAJOR >= 4
+  int ret = PSA_ERROR_CORRUPTION_DETECTED;
+#else
   int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-  int fd  = ((mbedtls_net_context*)ctx)->fd;
+#endif
+  int fd = ((mbedtls_net_context*)ctx)->fd;
 
   ret = yasio::xxsocket::send(fd, buf, static_cast<int>(len), YASIO_MSG_FLAG);
 
@@ -194,7 +222,12 @@ YASIO__DECL int yssl_do_handshake(yssl_st* ssl, int& err)
   switch (ret)
   {
     case 0:
+#if MBEDTLS_VERSION_MAJOR >= 3
+      // state is a private field; use the public accessor (available since 3.x)
+      if (::mbedtls_ssl_is_handshake_over(ssl))
+#else
       if (ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER)
+#endif
         return 0;
       err = EWOULDBLOCK;
       ret = -1;

@@ -122,6 +122,12 @@ if (WIN32)
     endif()
 endif()
 
+# CI matrix can select the backend via the YASIO_SSL_BACKEND environment
+# variable (1=OpenSSL, 2=mbedtls). An explicit -D always takes precedence.
+if (NOT DEFINED YASIO_SSL_BACKEND AND DEFINED ENV{YASIO_SSL_BACKEND})
+    set(YASIO_SSL_BACKEND "$ENV{YASIO_SSL_BACKEND}")
+endif()
+
 # Auto choose ssl backend if not supplied by user
 if (NOT DEFINED YASIO_SSL_BACKEND)
     if (CMAKE_SYSTEM_NAME MATCHES "Emscripten")
@@ -183,27 +189,132 @@ elseif(YASIO_SSL_BACKEND EQUAL 2) # mbedtls
     message(STATUS "Build with mbedtls support")
     set(ENABLE_PROGRAMS OFF CACHE BOOL "Build mbedtls programs" FORCE)
     set(ENABLE_TESTING OFF CACHE BOOL "Build mbed TLS tests." FORCE)
-    if(MSVC_VERSION AND (MSVC_VERSION LESS 1900))
-        set(MBEDTLS_VER "2.28.10")
-        message(AUTHOR_WARNING "Using mbedtls ${MBEDTLS_VER} for vs2013 happy")
-    else()
-        set(MBEDTLS_VER "3.6.3")
+
+    # Mbed TLS (>= 4 / TF-PSA-Crypto) decides which compiler flag set to use
+    # from CMAKE_C_SIMULATE_ID. On Windows a Clang build driven from a MSVC
+    # developer prompt (the win-clang CI job) uses the GNU-like clang.exe
+    # frontend (-std=c99, -Xclang ...) but CMake also reports
+    # CMAKE_C_SIMULATE_ID=MSVC. Mbed TLS then wrongly injects MSVC-only flags
+    # (/W3 /utf-8) into clang.exe, which fails with "no such file or directory".
+    # When the active C compiler is Clang with a non-MSVC (GNU-like) command
+    # line, clear the simulated id so Mbed TLS selects its clang flag set.
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        if(CMAKE_C_SIMULATE_ID)
+            message(STATUS "Clearing CMAKE_C_SIMULATE_ID='${CMAKE_C_SIMULATE_ID}' for GNU-like clang (mbedtls compiler detection)")
+            set(CMAKE_C_SIMULATE_ID "")
+        endif()
     endif()
+
+    # Mbed TLS >= 4 no longer ships several generated source files (error.c,
+    # ssl_debug_helpers_generated.c, psa_crypto_driver_wrappers*.c) in its git
+    # tree. They are produced at build time by framework Python scripts that
+    # require 'jsonschema' and 'jinja2'. GEN_FILES must be ON for this (it
+    # defaults to OFF on Windows), otherwise CMake fails with
+    # "Cannot find source file: error.c". Force it here for every platform.
+    set(GEN_FILES ON CACHE BOOL "Generate mbedtls generated sources" FORCE)
+
+    # Make sure the Python interpreter Mbed TLS will use has the build-time
+    # dependencies. This is a no-op when they are already installed; on the CI
+    # runners (which lack them) it installs them. Without this the generation
+    # scripts abort with "ModuleNotFoundError: No module named 'jsonschema'".
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        # jsonschema >= 4.18 pulls in rpds-py, a Rust extension with no prebuilt
+        # wheel on Solaris/FreeBSD (and it cannot be compiled there). Mbed TLS
+        # only calls jsonschema.validate() (available since 3.2), so cap it to
+        # the last pure-Python release to keep codegen deps self-contained.
+        set(_yasio_mbdeps "jsonschema>=3.2,<4.18" "jinja2")
+        set(_yasio_pip_args --disable-pip-version-check --trusted-host pypi.org
+            --trusted-host files.pythonhosted.org)
+
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -c "import jsonschema, jinja2"
+            RESULT_VARIABLE _yasio_mbedtls_pydeps
+            OUTPUT_QUIET ERROR_QUIET)
+        if(NOT _yasio_mbedtls_pydeps EQUAL 0)
+            message(STATUS "Installing Mbed TLS codegen deps (jsonschema<4.18, jinja2) for ${Python3_EXECUTABLE}")
+
+            # Ensure pip exists: -m pip -> ensurepip -> get-pip.py. The CA store
+            # on some minimal Unix CI images is broken, so download with TLS
+            # verification disabled and let pip use --trusted-host below.
+            execute_process(
+                COMMAND "${Python3_EXECUTABLE}" -m pip --version
+                RESULT_VARIABLE _yasio_pip_ok OUTPUT_QUIET ERROR_QUIET)
+            if(NOT _yasio_pip_ok EQUAL 0)
+                execute_process(
+                    COMMAND "${Python3_EXECUTABLE}" -m ensurepip --default-pip
+                    RESULT_VARIABLE _yasio_ensurepip_ok OUTPUT_QUIET ERROR_QUIET)
+                execute_process(
+                    COMMAND "${Python3_EXECUTABLE}" -m pip --version
+                    RESULT_VARIABLE _yasio_pip_ok OUTPUT_QUIET ERROR_QUIET)
+            endif()
+            if(NOT _yasio_pip_ok EQUAL 0)
+                message(STATUS "Bootstrapping pip via get-pip.py for ${Python3_EXECUTABLE}")
+                file(DOWNLOAD https://bootstrap.pypa.io/get-pip.py
+                     "${CMAKE_CURRENT_BINARY_DIR}/get-pip.py" TLS_VERIFY OFF STATUS _yasio_dl_status)
+                execute_process(
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/get-pip.py" --quiet
+                            --trusted-host pypi.org --trusted-host files.pythonhosted.org
+                    RESULT_VARIABLE _yasio_getpip_ok OUTPUT_QUIET ERROR_QUIET)
+            endif()
+
+            # Install with fallbacks for PEP 668 / read-only global site-packages.
+            set(_yasio_pip_rc 1)
+            foreach(_yasio_variant "" "--break-system-packages" "--user")
+                execute_process(
+                    COMMAND "${Python3_EXECUTABLE}" -m pip install --quiet
+                            ${_yasio_pip_args} ${_yasio_variant} ${_yasio_mbdeps}
+                    RESULT_VARIABLE _yasio_pip_rc
+                    OUTPUT_VARIABLE _yasio_pip_out ERROR_VARIABLE _yasio_pip_err)
+                if(_yasio_pip_rc EQUAL 0)
+                    break()
+                endif()
+            endforeach()
+
+            # Final verification with the exact interpreter Mbed TLS codegen uses.
+            # Fail loudly (with the real pip error) instead of letting codegen
+            # die with a cryptic ModuleNotFoundError.
+            execute_process(
+                COMMAND "${Python3_EXECUTABLE}" -c "import jsonschema, jinja2"
+                RESULT_VARIABLE _yasio_mbedtls_pydeps OUTPUT_QUIET ERROR_QUIET)
+            if(NOT _yasio_mbedtls_pydeps EQUAL 0)
+                message(FATAL_ERROR
+                    "Mbed TLS codegen needs pure-Python modules 'jsonschema(<4.18)' and 'jinja2'. "
+                    "Could not install them for ${Python3_EXECUTABLE}. Last pip error:\n${_yasio_pip_err}\n"
+                    "Fix manually: '${Python3_EXECUTABLE}' -m pip install 'jsonschema<4.18' jinja2")
+            endif()
+        endif()
+    endif()
+
+    # Track the latest Mbed TLS development (main) branch (4.x).
+    # Since 4.0 Mbed TLS moved crypto into the TF-PSA-Crypto submodule, so a
+    # shallow FetchContent clone won't initialize those; force a full recursive
+    # clone. The yasio mbedtls backend source supports both the legacy 2.x/3.x
+    # API and the new 4.x PSA based API via version guards.
+    set(_mbedtls_git_tag "development")
+    set(_mbedtls_git_args GIT_SHALLOW FALSE GIT_SUBMODULES_RECURSE TRUE)
+    set(_mbedtls_options "MBEDTLS_FATAL_WARNINGS OFF" "GEN_FILES ON")
+
     if (PWSH_COMMAND)
-        _1kadd_pkg("gh:Mbed-TLS/mbedtls#v${MBEDTLS_VER}" OPTIONS "MBEDTLS_FATAL_WARNINGS OFF")
+        _1kadd_pkg("gh:Mbed-TLS/mbedtls#${_mbedtls_git_tag}" OPTIONS ${_mbedtls_options})
     else()
         include(1k/CPM.cmake)
         CPMAddPackage(
             NAME mbedtls
-            VERSION ${MBEDTLS_VER}
             GITHUB_REPOSITORY "Mbed-TLS/mbedtls"
-            GIT_TAG "v${MBEDTLS_VER}"
+            GIT_TAG "${_mbedtls_git_tag}"
             OPTIONS
-                "MBEDTLS_FATAL_WARNINGS OFF"
+                ${_mbedtls_options}
+            ${_mbedtls_git_args}
         )
     endif()
     yasio_config_target_outdir(mbedtls)
-    yasio_config_target_outdir(mbedcrypto)
+    # 4.x renamed the crypto target mbedcrypto -> tfpsacrypto; configure whichever exists.
+    if(TARGET tfpsacrypto)
+        yasio_config_target_outdir(tfpsacrypto)
+    elseif(TARGET mbedcrypto)
+        yasio_config_target_outdir(mbedcrypto)
+    endif()
     yasio_config_target_outdir(mbedx509)
 endif()
 
@@ -307,7 +418,12 @@ macro(yasio_link_ssl_libraries target_name)
             target_link_libraries (${target_name} OpenSSL::SSL OpenSSL::Crypto)
         endif()
     elseif(YASIO_SSL_BACKEND EQUAL 2)
-        target_link_libraries(${target_name} mbedtls mbedcrypto mbedx509)
+        # Mbed TLS 4.x renamed mbedcrypto -> tfpsacrypto.
+        if(TARGET tfpsacrypto)
+            target_link_libraries(${target_name} mbedtls tfpsacrypto mbedx509)
+        else()
+            target_link_libraries(${target_name} mbedtls mbedcrypto mbedx509)
+        endif()
     endif()
 endmacro()
 

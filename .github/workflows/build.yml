@@ -22,250 +22,446 @@ env:
 
 jobs:
   win-msvc:
+    name: win-msvc (${{ matrix.arch }}, ${{ matrix.ssl_name }})
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         arch:
           - x86
           - x64
+        ssl_backend: [1, 2]
+        include:
+          - ssl_backend: 1
+            ssl_name: OpenSSL
+          - ssl_backend: 2
+            ssl_name: mbedtls
     env:
       BUILD_ARCH: ${{ matrix.arch }}
+      YASIO_SSL_BACKEND: ${{ matrix.ssl_backend }}
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
 
-    - uses: ilammy/msvc-dev-cmd@v1
-      with: 
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
         arch: ${{ env.BUILD_ARCH }}
         uwp: 'false'
 
     - name: Build
       shell: pwsh
-      run: |
-        .\tools\ci.ps1 -p win32 -a $env:BUILD_ARCH
+      run: .\tools\ci.ps1 -p win32 -a $env:BUILD_ARCH
+
+    - name: Test
+      shell: pwsh
+      run: .\tools\ci.ps1 -testOnly
   win-clang:
+    name: win-clang (${{ matrix.ssl_name }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ssl_backend: [1, 2]
+        include:
+          - ssl_backend: 1
+            ssl_name: OpenSSL
+          - ssl_backend: 2
+            ssl_name: mbedtls
+    env:
+      YASIO_SSL_BACKEND: ${{ matrix.ssl_backend }}
  
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
 
-    - uses: ilammy/msvc-dev-cmd@v1
-      with: 
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
         arch: ${{ env.BUILD_ARCH }}
         uwp: 'false'
     - name: Build
       shell: pwsh
-      run: |
-        .\tools\ci.ps1 -p win32 -cc clang
+      run: .\tools\ci.ps1 -p win32 -cc clang
+
+    - name: Test
+      shell: pwsh
+      run: .\tools\ci.ps1 -testOnly
   win-mingw:
+    name: win-mingw (${{ matrix.ssl_name }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ssl_backend: [1, 2]
+        include:
+          - ssl_backend: 1
+            ssl_name: OpenSSL
+          - ssl_backend: 2
+            ssl_name: mbedtls
+    env:
+      YASIO_SSL_BACKEND: ${{ matrix.ssl_backend }}
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
 
-    - uses: msys2/setup-msys2@v2
-      with: 
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
         msystem: mingw64
         install: mingw-w64-x86_64-toolchain
     - name: Build
+      shell: pwsh
       run: .\tools\ci.ps1 -p win32 -cc 'gcc'
+
+    - name: Test
+      shell: pwsh
+      run: .\tools\ci.ps1 -testOnly
   winuwp:
+    name: winuwp (${{ matrix.arch }}, ${{ matrix.ssl_name }})
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         arch:
           - x64
           - arm64
+        ssl_backend: [1, 2]
+        include:
+          - ssl_backend: 1
+            ssl_name: OpenSSL
+          - ssl_backend: 2
+            ssl_name: mbedtls
     env:
       BUILD_ARCH: ${{ matrix.arch }}
+      YASIO_SSL_BACKEND: ${{ matrix.ssl_backend }}
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
 
-    - uses: ilammy/msvc-dev-cmd@v1
-      with: 
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
         arch: ${{ env.BUILD_ARCH }}
         uwp: 'true'
 
     - name: Build
       shell: pwsh
       run: .\tools\ci.ps1 -p winuwp -a $env:BUILD_ARCH
+
+    - name: Test
+      shell: pwsh
+      run: .\tools\ci.ps1 -testOnly
   linux:
     # The CMake configure and build commands are platform agnostic and should work equally
     # well on Windows or Mac.  You can convert this to a matrix build if you need
     # cross-platform coverage.
     # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    name: linux (${{ matrix.ssl_name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ssl_backend: [1, 2]
+        include:
+          - ssl_backend: 1
+            ssl_name: OpenSSL
+          - ssl_backend: 2
+            ssl_name: mbedtls
+    env:
+      YASIO_SSL_BACKEND: ${{ matrix.ssl_backend }}
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
 
     - name: Build
-      # Execute the build.  You can specify a specific target with "--target <NAME>"
       shell: pwsh
-      run: |
-        ./tools/ci.ps1 -p linux
+      run: ./tools/ci.ps1 -p linux
+
+    - name: Test
+      shell: pwsh
+      run: ./tools/ci.ps1 -testOnly
   android:
-    # The CMake configure and build commands are platform agnostic and should work equally
-    # well on Windows or Mac.  You can convert this to a matrix build if you need
-    # cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    # Cross-compiled target: there is no host test, but the Test step is kept
+    # for a uniform layout and will report that no tests are available.
+    name: android (${{ matrix.arch }}, ${{ matrix.ssl_name }})
     runs-on: windows-latest
 
     strategy:
+      fail-fast: false
       matrix:
         arch:
           - armv7
           - arm64
           - x86
           - x64
+        ssl_backend: [1, 2]
+        include:
+          - ssl_backend: 1
+            ssl_name: OpenSSL
+          - ssl_backend: 2
+            ssl_name: mbedtls
     env:
       BUILD_ARCH: ${{ matrix.arch }}
+      YASIO_SSL_BACKEND: ${{ matrix.ssl_backend }}
       
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
 
     - name: Build
-      # Execute the build.  You can specify a specific target with "--target <NAME>"
       shell: pwsh
       run: ./tools/ci.ps1 -p android -a $env:BUILD_ARCH
+
+    - name: Test
+      shell: pwsh
+      run: ./tools/ci.ps1 -testOnly
   osx:
-    # The CMake configure and build commands are platform agnostic and should work equally
-    # well on Windows or Mac.  You can convert this to a matrix build if you need
-    # cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    name: osx (${{ matrix.arch }}, ${{ matrix.ssl_name }})
     runs-on: macos-latest
 
     strategy:
+      fail-fast: false
       matrix:
         arch:
           - x64
           - arm64
+        ssl_backend: [1, 2]
+        include:
+          - ssl_backend: 1
+            ssl_name: OpenSSL
+          - ssl_backend: 2
+            ssl_name: mbedtls
     env:
       BUILD_ARCH: ${{ matrix.arch }}
+      YASIO_SSL_BACKEND: ${{ matrix.ssl_backend }}
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
         
     - name: Build
-      # Execute the build.  You can specify a specific target with "--target <NAME>"
       shell: pwsh
-      run: |
-        ./tools/ci.ps1 -p osx -a $env:BUILD_ARCH
+      run: ./tools/ci.ps1 -p osx -a $env:BUILD_ARCH
+
+    - name: Test
+      shell: pwsh
+      run: ./tools/ci.ps1 -testOnly
   ios:
-    # The CMake configure and build commands are platform agnostic and should work equally
-    # well on Windows or Mac.  You can convert this to a matrix build if you need
-    # cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    # Cross-compiled target: there is no host test, but the Test step is kept
+    # for a uniform layout and will report that no tests are available.
+    name: ios (${{ matrix.target }}, ${{ matrix.ssl_name }})
     runs-on: macos-latest
     
     strategy:
+      fail-fast: false
       matrix:
         target:
           - ios
           - tvos
           - watchos
+        ssl_backend: [1, 2]
+        include:
+          - ssl_backend: 1
+            ssl_name: OpenSSL
+          - ssl_backend: 2
+            ssl_name: mbedtls
+        # watchOS has no OpenSSL xcframework slice (CMake also forces mbedtls there).
+        exclude:
+          - target: watchos
+            ssl_backend: 1
     env:
       BUILD_TARGET: ${{ matrix.target }}
+      YASIO_SSL_BACKEND: ${{ matrix.ssl_backend }}
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
         
     - name: Build
-      # Execute the build.  You can specify a specific target with "--target <NAME>"
       shell: pwsh
       run: ./tools/ci.ps1 -p $env:BUILD_TARGET -a arm64
+
+    - name: Test
+      shell: pwsh
+      run: ./tools/ci.ps1 -testOnly
   freebsd:
-    # The CMake configure and build commands are platform agnostic and should work equally
-    # well on Windows or Mac.  You can convert this to a matrix build if you need
-    # cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    # FreeBSD VM has no PowerShell, so 1kiss cannot fetch the OpenSSL prebuilt;
+    # keep this job mbedtls-only (mbedtls is fetched via CMake FetchContent).
+    # Build and Test are separate custom-shell steps inside the same VM.
+    name: freebsd (${{ matrix.ssl_name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ssl_backend: [2]
+        include:
+          - ssl_backend: 2
+            ssl_name: mbedtls
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
-    - name: Build
+
+    # The VM's system Python has no usable pip (and jsonschema>=4.18 needs a
+    # Rust extension with no BSD wheel). Prepare the codegen deps on the host,
+    # where pip is complete, as pure-Python files; vmactions syncs this folder
+    # into the VM and the build step loads it via PYTHONPATH. This keeps codegen
+    # independent of the VM's broken pip / CA store.
+    - name: Prepare deps
+      run: |
+        python3 -m pip install --quiet --target tools/codegen-deps \
+          --no-compile 'jsonschema>=3.2,<4.18' jinja2
+        find tools/codegen-deps -type d -name __pycache__ -prune -exec rm -rf {} +
+        find tools/codegen-deps -type f -name '*.pyc' -delete
+        find tools/codegen-deps -type f -name '*.so' -delete
+        PYTHONPATH=$PWD/tools/codegen-deps python3 -c 'import jsonschema, jinja2; print("host codegen deps OK")'
+
+    - name: Start VM
       uses: vmactions/freebsd-vm@v1
       with:
-        release: '15.0'
+        release: '15.1'
         usesh: true
         sync: rsync
-        copyback: false
         prepare: |
-          pkg install -y git
-          pkg install -y cmake
-          pkg install -y python3
-          # required by mbedtls-3.3.0
-          pkg search pip
+          pkg install -y git cmake python3 perl5
+          # mbedtls 4.x requires a modern C compiler; install the newest GCC
+          # available from ports (falling back to older versioned packages).
+          pkg install -y gcc15 || pkg install -y gcc14 || pkg install -y gcc13 || pkg install -y gcc || true
           python3 -V
-          # pkg install -y py311-pip
-          # pip install --no-deps jsonschema 
-          # pip install jinja2
-          # install perl5, localtion: /usr/local/bin
-          pkg search perl5
-          pkg search perl5 | cut -d' ' -f1 | head -n 1 | xargs pkg install -y
           perl -v
-        run: |
-          echo Building on freebsd...
-          cmake -G "Unix Makefiles" -S . -Bbuild -DYASIO_SSL_BACKEND=2
-          cmake --build build --config Release
-          echo run test icmp on freebsd...
-          ./build/tests/icmp/icmptest
+
+    - name: Build
+      shell: freebsd {0}
+      run: |
+        # Select the highest-versioned GCC installed from ports (POSIX-only;
+        # Solaris/FreeBSD base tools do not all support GNU 'sort -V').
+        GCC_BIN=""
+        for v in 15 14 13 12 11 10; do
+          if [ -x "/usr/local/bin/gcc$v" ]; then GCC_BIN="/usr/local/bin/gcc$v"; break; fi
+        done
+        GXX_BIN=""
+        for v in 15 14 13 12 11 10; do
+          if [ -x "/usr/local/bin/g++$v" ]; then GXX_BIN="/usr/local/bin/g++$v"; break; fi
+        done
+        export CC=${GCC_BIN:-cc}
+        export CXX=${GXX_BIN:-c++}
+        "$CC" --version
+        # Load the host-prepared pure-Python codegen deps (synced into the VM)
+        # so mbedtls codegen works without any pip in the VM.
+        export PYTHONPATH="$PWD/tools/codegen-deps${PYTHONPATH:+:$PYTHONPATH}"
+        PY=$(command -v python3)
+        "$PY" -c 'import jsonschema, jinja2; print("codegen deps OK")'
+        cmake -G "Unix Makefiles" -S . -Bbuild -DYASIO_SSL_BACKEND=${{ matrix.ssl_backend }} -DPython3_EXECUTABLE="$PY"
+        cmake --build build --config Release
+
+    - name: Test
+      shell: freebsd {0}
+      run: |
+        ./build/tests/icmp/icmptest
+        ./build/tests/ssl/ssltest
   solaris:
-    # The CMake configure and build commands are platform agnostic and should work equally
-    # well on Windows or Mac.  You can convert this to a matrix build if you need
-    # cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    # Solaris VM has no PowerShell, so 1kiss cannot fetch the OpenSSL prebuilt;
+    # keep this job mbedtls-only (mbedtls is fetched via CMake FetchContent).
+    # Build and Test are separate custom-shell steps inside the same VM.
+    name: solaris (${{ matrix.ssl_name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ssl_backend: [2]
+        include:
+          - ssl_backend: 2
+            ssl_name: mbedtls
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout
+      uses: actions/checkout@v6
       with:
         submodules: 'recursive'
-    - name: Build
+
+    # The Solaris system Python has no usable pip and its CA store is broken,
+    # so get-pip/ensurepip both fail. Prepare codegen deps on the host instead:
+    # download them as pure-Python files, strip compiled extensions, and let
+    # vmactions sync this folder into the VM (loaded via PYTHONPATH at build).
+    - name: Prepare deps
+      run: |
+        python3 -m pip install --quiet --target tools/codegen-deps \
+          --no-compile 'jsonschema>=3.2,<4.18' jinja2
+        find tools/codegen-deps -type d -name __pycache__ -prune -exec rm -rf {} +
+        find tools/codegen-deps -type f -name '*.pyc' -delete
+        find tools/codegen-deps -type f -name '*.so' -delete
+        PYTHONPATH=$PWD/tools/codegen-deps python3 -c 'import jsonschema, jinja2; print("host codegen deps OK")'
+
+    - name: Start VM
       uses: vmactions/solaris-vm@v1
       with:
-        release: '11.4-gcc'
+        release: '11.4-gcc-14'
         usesh: true
         sync: rsync
-        copyback: false
         prepare: |
-          # git
-          pkgutil -y -i git
-          # cmake
-          pkgutil -y -i cmake
-          # required by mbedtls-3.3.0
-          python3 --version
-          # pip-3.5 install jsonschema jinja2
-          # gcc
-          echo y | pkg install gcc
-          # check tools
+          # git, cmake and python are preinstalled in the 11.4-gcc-14 image.
+          pkgutil -y -i git || true
+          python3 --version || true
+          # The 11.4-gcc-14 image already ships GCC 14; try to upgrade to the
+          # newest GCC published via IPS (15), otherwise keep the image's one.
+          for v in 15 14; do
+            if pkg install developer/gcc-$v >/dev/null 2>&1; then
+              echo "Installed GCC $v"
+              break
+            fi
+          done
           cmake --version
-          gcc --version
           perl -v
-        run: |
-          echo Building on solaris...
-          cmake -G "Unix Makefiles" -S . -Bbuild -DYASIO_SSL_BACKEND=2
-          cmake --build build --config Release --verbose
-          echo run test icmp on solaris ...
-          ./build/tests/icmp/icmptest
-          echo run ssltest on solaris ...
-          ./build/tests/ssl/ssltest
+
+    - name: Build
+      shell: solaris {0}
+      run: |
+        # Select the highest-versioned GCC under /usr/gcc (POSIX-only: Solaris
+        # sort has no -V and tail has no -n, which broke the previous script).
+        GCC_BIN=""
+        for v in 20 19 18 17 16 15 14 13 12; do
+          if [ -x "/usr/gcc/$v/bin/gcc" ]; then GCC_BIN="/usr/gcc/$v/bin/gcc"; break; fi
+        done
+        GXX_BIN=""
+        for v in 20 19 18 17 16 15 14 13 12; do
+          if [ -x "/usr/gcc/$v/bin/g++" ]; then GXX_BIN="/usr/gcc/$v/bin/g++"; break; fi
+        done
+        export CC=${GCC_BIN:-$(command -v gcc)}
+        export CXX=${GXX_BIN:-$(command -v g++)}
+        "$CC" --version
+        # Load the host-prepared pure-Python codegen deps (synced into the VM)
+        # so mbedtls codegen works without any pip in the VM.
+        export PYTHONPATH="$PWD/tools/codegen-deps${PYTHONPATH:+:$PYTHONPATH}"
+        PY=$(command -v python3)
+        "$PY" -c 'import jsonschema, jinja2; print("codegen deps OK")'
+        cmake -G "Unix Makefiles" -S . -Bbuild -DYASIO_SSL_BACKEND=${{ matrix.ssl_backend }} -DPython3_EXECUTABLE="$PY"
+        cmake --build build --config Release --verbose
+
+    - name: Test
+      shell: solaris {0}
+      run: |
+        ./build/tests/icmp/icmptest
+        ./build/tests/ssl/ssltest

@@ -45,16 +45,27 @@ struct yssl_st {
 
 #elif YASIO_SSL_BACKEND == 2 // mbedtls
 #  define MBEDTLS_ALLOW_PRIVATE_ACCESS
+// version.h pulls in build_info.h (3.x/4.x), so MBEDTLS_VERSION_MAJOR is
+// available for selecting between the legacy and the PSA based APIs.
+#  include "mbedtls/version.h"
+#  if MBEDTLS_VERSION_MAJOR >= 4
+// Mbed TLS 4.x: the legacy entropy/CTR_DRBG API was removed, the library
+// always uses the built-in PSA random generator. psa_crypto_init() must be
+// called before any cryptographic operation (see yssl_ctx_new).
+#    include "psa/crypto.h"
+#  else
+#    include "mbedtls/entropy.h"
+#    include "mbedtls/ctr_drbg.h"
+#  endif
 #  include "mbedtls/net_sockets.h"
 #  include "mbedtls/debug.h"
 #  include "mbedtls/ssl.h"
-#  include "mbedtls/entropy.h"
-#  include "mbedtls/ctr_drbg.h"
 #  include "mbedtls/error.h"
-#  include "mbedtls/version.h"
 typedef struct ssl_ctx_st {
+#  if MBEDTLS_VERSION_MAJOR < 4
   mbedtls_ctr_drbg_context ctr_drbg;
   mbedtls_entropy_context entropy;
+#  endif
   mbedtls_x509_crt cert;
   mbedtls_pk_context pkey;
   mbedtls_ssl_config conf;

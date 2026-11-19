@@ -16,7 +16,11 @@ enum
   SSLTEST_MAX_CHANNELS
 };
 
-void yasioTest()
+// Returns 0 only when the local TLS client<->server pair really completed a
+// mutual handshake AND exchanged encrypted application data. The github.com
+// channel is only a best-effort external smoke test: it must not mask a broken
+// SSL backend when CI has no outbound network.
+int yasioTest()
 {
   yasio::inet::io_hostent endpoints[] = {{"github.com", 443}, {"127.0.0.1", 20231}, {"127.0.0.1", 20231}};
 
@@ -29,6 +33,12 @@ void yasioTest()
   int http_client_bytes_transferred = 0;
 
   int done_count = 0;
+
+  // Assertions that decide the test result. The two local channels form a
+  // self-contained TLS handshake/data exchange, independent of the internet.
+  bool client_recv_ok       = false;
+  bool server_recv_ok       = false;
+  bool local_handshake_fail = false;
 
   service.set_option(YOPT_S_FORWARD_PACKET, 1); // fast forward packet to up layer once got data from OS kernel
   service.set_option(YOPT_S_SSL_CACERT, SSLTEST_CACERT);
@@ -45,7 +55,6 @@ void yasioTest()
         switch (event->cindex())
         {
           case SSLTEST_CHANNEL_HTTP_CLIENT: {
-            auto packet = event->packet_view();
             http_client_bytes_transferred += static_cast<int>(packet.size());
             http_resp_data.insert(http_resp_data.end(), packet.data(), packet.data() + packet.size());
           }
@@ -53,11 +62,13 @@ void yasioTest()
           case SSLTEST_CHANNEL_CLIENT:
             fprintf(stdout, "==> ssl client: recv message '%s' from server\n", std::string{reinterpret_cast<const char*>(packet.data()), packet.size()}.c_str());
             fflush(stdout);
+            client_recv_ok = true; // decrypted data arrived => TLS read path works
             service.close(event->transport());
             break;
           case SSLTEST_CHANNEL_SERVER:
             fprintf(stdout, "==> ssl server: recv message '%s' from client\n", std::string{reinterpret_cast<const char*>(packet.data()), packet.size()}.c_str());
             fflush(stdout);
+            server_recv_ok = true; // decrypted data arrived => TLS read path works
             break;
         }
 
@@ -96,6 +107,13 @@ void yasioTest()
 
           transports.push_back(transport);
         }
+        else if (event->cindex() == SSLTEST_CHANNEL_CLIENT || event->cindex() == SSLTEST_CHANNEL_SERVER)
+        {
+          // A local channel can only fail to open if its TLS handshake failed.
+          local_handshake_fail = true;
+          fprintf(stderr, "==> local ssl channel %d handshake failed, status=%d\n", event->cindex(), event->status());
+          fflush(stderr);
+        }
         break;
       case YEK_ON_CLOSE:
         if (++done_count == SSLTEST_MAX_CHANNELS)
@@ -119,22 +137,33 @@ void yasioTest()
 
   std::this_thread::sleep_for(std::chrono::microseconds(200));
   service.open(SSLTEST_CHANNEL_HTTP_CLIENT, YCK_SSL_CLIENT); // open https client
-  service.open(SSLTEST_CHANNEL_SERVER, YCK_SSL_SERVER);      // open local ssl server
+  service.open(SSLTEST_CHANNEL_SERVER, YCK_SSL_SERVER);       // open local ssl server
   std::this_thread::sleep_for(std::chrono::microseconds(200));
   service.open(SSLTEST_CHANNEL_CLIENT, YCK_SSL_CLIENT); // open local ssl client
 
+  // Watchdog: bail out after ~60s instead of hanging a CI job forever when a
+  // channel never closes. duration is incremented by 50 per 50ms sleep, so it
+  // tracks elapsed milliseconds. Crucially, once the two local channels have
+  // proven the TLS backend works we stop early, so an unreachable github.com
+  // cannot keep the test running (or turn a healthy backend into a failure).
   time_t duration = 0;
   while (service.is_running())
   {
-    if (duration >= 6000000)
-    {
-      for (auto transport : transports)
-        service.close(transport);
+    if (client_recv_ok && server_recv_ok)
+      break; // local TLS verification complete
+    if (duration >= 60000)
       break;
-    }
     duration += 50;
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
+  for (auto transport : transports)
+    service.close(transport);
+  service.stop();
+
+  bool passed = !local_handshake_fail && client_recv_ok && server_recv_ok;
+  fprintf(stdout, "===> ssltest %s (local_tls: client=%d server=%d)\n", passed ? "PASSED" : "FAILED", client_recv_ok, server_recv_ok);
+  fflush(stdout);
+  return passed ? 0 : 1;
 }
 
 int main(int, char**)
@@ -142,7 +171,5 @@ int main(int, char**)
 #if defined(_WIN32)
   SetConsoleOutputCP(CP_UTF8);
 #endif
-  yasioTest();
-
-  return 0;
+  return yasioTest();
 }
