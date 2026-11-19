@@ -100,10 +100,6 @@ jobs:
 
     - name: Build
       shell: pwsh
-      # Belt-and-braces: if a toolchain older than Clang 22 still gets picked
-      # up, opt out of the MSVC STL compiler-version gate. Harmless on Clang 22.
-      env:
-        CXXFLAGS: -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
       run: .\tools\ci.ps1 -p win32 -cc clang
 
     - name: Test
