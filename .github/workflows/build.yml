@@ -80,13 +80,46 @@ jobs:
       with:
         submodules: 'recursive'
 
+    # windows-latest now ships VS 18 (MSVC 14.52) whose STL hard-requires
+    # Clang 22+ (STL1000 static_assert in yvals_core.h). The preinstalled LLVM
+    # is older, so install the latest stable LLVM and put it first on PATH.
+    # Resolve the newest major from GitHub releases so this never goes stale
+    # (currently 23); setup-llvm then installs the latest patch of that major.
+    - name: Resolve latest LLVM
+      id: llvmver
+      shell: pwsh
+      run: |
+        $tags = Invoke-RestMethod -Headers @{ Authorization = "Bearer ${{ github.token }}" } `
+          "https://api.github.com/repos/llvm/llvm-project/tags?per_page=100"
+        $majors = foreach ($t in $tags) {
+          if ($t.name -match '^llvmorg-(\d+)(?:\.\d+)+$') { [int]$Matches[1] }
+        }
+        $major = $majors | Sort-Object -Descending | Select-Object -First 1
+        if (!$major) { throw "Could not resolve latest LLVM major version" }
+        Write-Host "Latest LLVM major: $major"
+        "version=$major" >> $env:GITHUB_OUTPUT
+
+    - name: Setup LLVM
+      uses: ZhongRuoyu/setup-llvm@v0
+      with:
+        llvm-version: ${{ steps.llvmver.outputs.version }}
+
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: ${{ env.BUILD_ARCH }}
         uwp: 'false'
+
+    - name: Verify Clang
+      shell: pwsh
+      run: clang++ --version
+
     - name: Build
       shell: pwsh
+      # Belt-and-braces: if a toolchain older than Clang 22 still gets picked
+      # up, opt out of the MSVC STL compiler-version gate. Harmless on Clang 22.
+      env:
+        CXXFLAGS: -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
       run: .\tools\ci.ps1 -p win32 -cc clang
 
     - name: Test
